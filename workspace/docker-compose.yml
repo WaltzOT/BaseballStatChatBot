@@ -1,0 +1,15 @@
+version: '3.8'
+
+services:
+  nemo-chatbot:
+    build: .
+    container_name: nemo_chatbot
+    volumes:
+      - ./data:/workspace/data       # Mount data folder
+      - ./scripts:/workspace/scripts # Mount scripts folder
+      - ./models:/workspace/models   # Mount models output folder
+    stdin_open: true
+    tty: true
+    environment:
+      - MODEL_DIR=/workspace/models
+    command: ["python", "scripts/initialTraining.py"]
