@@ -1,34 +1,47 @@
 import os
 import json
-from nemo.collections.nlp.models import IntentSlotClassificationModel
-from nemo.utils import logging
+import torch
+from transformers import GPT2Tokenizer, GPT2LMHeadModel
+from datasets import Dataset
 
-def load_and_test_model(model_path, test_data_path):
-    # Load the trained model
-    logging.info(f"Loading model from: {model_path}")
-    model = IntentSlotClassificationModel.restore_from(restore_path=model_path)
+# Paths
+model_dir = "/workspace/models/gpt2_nlp_model"
+test_data_path = "/workspace/data/testData.json"
+
+# Load Model and Tokenizer
+tokenizer = GPT2Tokenizer.from_pretrained(model_dir)
+model = GPT2LMHeadModel.from_pretrained(model_dir)
+tokenizer.pad_token = tokenizer.eos_token  # Ensure pad token is set
+
+# Load Test Data
+def load_test_data(file_path):
+    with open(file_path, "r") as f:
+        return json.load(f)
+
+test_data = load_test_data(test_data_path)
+
+# Generate and extract structured responses
+def generate_response(query):
+    input_text = f"Query: {query} | Intent:"
+    input_ids = tokenizer(input_text, return_tensors="pt").input_ids
+    output_ids = model.generate(input_ids=input_ids, max_new_tokens=50, pad_token_id=tokenizer.eos_token_id)
+    output_text = tokenizer.decode(output_ids[0], skip_special_tokens=True)
+    return output_text
+
+# Testing Loop
+print("Generating responses for test cases...")
+for idx, item in enumerate(test_data):
+    query = item["query"]
+    print(f"Test Case {idx+1}:")
+    print(f"Input: {query}")
+    response = generate_response(query)
     
-    # Load test data
-    with open(test_data_path, "r") as f:
-        data = json.load(f)
-    
-    queries = [item["query"] for item in data]
-    logging.info("Running inference on training data...")
+    # Extract intent and entities (split by the "Intent" keyword for structured extraction)
+    if "Intent:" in response:
+        intent_part = response.split("Intent:")[1].strip()
+        print(f"Generated Response: {intent_part}")
+    else:
+        print(f"Generated Response: {response}")
+    print("-" * 50)
 
-    # Perform inference
-    pred_intents, pred_slots = model.predict_from_examples(queries, model.model_cfg.test_ds)
-
-    # Display results
-    for query, intent, slots in zip(queries, pred_intents, pred_slots):
-        print(f"Query: {query}")
-        print(f"Predicted Intent: {intent}")
-        print(f"Predicted Slots: {slots}")
-        print("-" * 50)
-
-if __name__ == "__main__":
-    # Paths
-    model_path = os.getenv("MODEL_DIR", "./models") + "/baseball_stat_model.nemo"
-    training_data_path = "./data/trainingData.json"
-
-    # Test the model
-    load_and_test_model(model_path, training_data_path)
+print("Inference complete.")

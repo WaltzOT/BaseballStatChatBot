@@ -1,30 +1,75 @@
-import pytorch_lightning as pl
-from omegaconf import DictConfig, OmegaConf
-from nemo.collections.nlp.models import IntentSlotClassificationModel
-from nemo.utils import logging
-from nemo.utils.exp_manager import exp_manager
 import os
+import json
+import torch
+from transformers import (
+    GPT2Tokenizer,
+    GPT2LMHeadModel,
+    Trainer,
+    TrainingArguments,
+    DataCollatorForLanguageModeling,
+)
+from datasets import Dataset
 
-def main(cfg: DictConfig) -> None:
-    logging.info(f'Config Params:\n {OmegaConf.to_yaml(cfg)}')
+# Paths
+train_data_path = "/workspace/data/trainingData.json"
+validation_data_path = "/workspace/data/validationData.json"
+model_dir = "/workspace/models/gpt2_nlp_model"
 
-    # Setup Trainer
-    trainer = pl.Trainer(**cfg.trainer)
-    exp_manager(trainer, cfg.get("exp_manager", None))
+# Load Data
+def load_data(file_path):
+    with open(file_path, "r") as f:
+        data = json.load(f)
+    formatted_data = [{"text": f"Query: {item['query']} | Intent: {item['intent']} | Entities: {json.dumps(item['entities'])}"} for item in data]
+    return Dataset.from_list(formatted_data)
 
-    # Initialize Model
-    model = IntentSlotClassificationModel(cfg.model, trainer=trainer)
+train_dataset = load_data(train_data_path)
+validation_dataset = load_data(validation_data_path)
 
-    # Training
-    logging.info("Starting training...")
-    trainer.fit(model)
+# Tokenizer and Model
+tokenizer = GPT2Tokenizer.from_pretrained("gpt2")
+tokenizer.pad_token = tokenizer.eos_token  # Set pad token
 
-    # Save model to models directory
-    model_path = os.getenv('MODEL_DIR', './models') + "/baseball_stat_model.nemo"
-    model.save_to(model_path)
-    logging.info(f"Model saved to: {model_path}")
+model = GPT2LMHeadModel.from_pretrained("gpt2")
 
-if __name__ == "__main__":
-    import hydra
-    from omegaconf import OmegaConf
-    hydra.main(config_path="../data", config_name="baseball_chatbot_config")(main)
+# Tokenization function
+def tokenize_function(examples):
+    return tokenizer(examples["text"], truncation=True, padding="max_length", max_length=128)
+
+tokenized_train_dataset = train_dataset.map(tokenize_function, batched=True, remove_columns=["text"])
+tokenized_validation_dataset = validation_dataset.map(tokenize_function, batched=True, remove_columns=["text"])
+
+# Data Collator
+data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
+
+# Training Arguments
+training_args = TrainingArguments(
+    output_dir=model_dir,
+    evaluation_strategy="epoch",
+    learning_rate=2e-5,
+    per_device_train_batch_size=4,
+    per_device_eval_batch_size=4,
+    num_train_epochs=5,
+    weight_decay=0.01,
+    save_strategy="epoch",
+    save_total_limit=2,
+    no_cuda=True  # Use CPU
+)
+
+# Trainer
+trainer = Trainer(
+    model=model,
+    args=training_args,
+    train_dataset=tokenized_train_dataset,
+    eval_dataset=tokenized_validation_dataset,
+    data_collator=data_collator,
+)
+
+# Train the model
+print("Training GPT-2 model for intent classification and entity extraction...")
+trainer.train()
+print("Training complete. Saving model...")
+
+# Save the model
+model.save_pretrained(model_dir)
+tokenizer.save_pretrained(model_dir)
+print("Model saved successfully.")
